@@ -10,9 +10,9 @@ import io
 import re
 import os
 import tempfile
-from typing import List
-import mimetypes
-import aiohttp
+# from typing import List
+# import mimetypes
+# import aiohttp
 
 app = FastAPI(title="Document Processing API")
 
@@ -164,3 +164,6 @@ async def convert_pdf_to_word(file: UploadFile = File(...)):
     response.background = cleanup_files
     return response
 
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 8000))  # Default to 8000 if PORT is not set
+    uvicorn.run(app, host="0.0.0.0", port=port)
