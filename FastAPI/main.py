@@ -2,7 +2,6 @@ from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from transformers import pipeline
-# from moviepy import VideoFileClip
 from pdf2docx import Converter
 import PyPDF2
 import docx
@@ -10,9 +9,7 @@ import io
 import re
 import os
 import tempfile
-# from typing import List
-# import mimetypes
-# import aiohttp
+
 
 app = FastAPI(title="Document Processing API")
 
@@ -173,4 +170,3 @@ if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=port)
 
    
-    
