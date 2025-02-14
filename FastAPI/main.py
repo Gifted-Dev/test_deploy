@@ -165,7 +165,12 @@ async def convert_pdf_to_word(file: UploadFile = File(...)):
     return response
 
 
+
+port = int(os.getenv("PORT", 8080))  # Default to 8080 if PORT not set
+
 if __name__ == "__main__":
     import uvicorn
-    port = int(os.environ.get("PORT", 8000))  # Default to 8000 if PORT is not set
     uvicorn.run(app, host="0.0.0.0", port=port)
+
+   
+    
