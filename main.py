@@ -12,7 +12,6 @@ from pdf2docx import Converter
 from dotenv import load_dotenv
 import cloudinary
 import cloudinary.uploader
-import cloudinary.api
 import PyPDF2
 import docx
 
@@ -32,7 +31,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Load environment variables from .env file
+# Load environment variables
 load_dotenv()
 
 # Configure Cloudinary
@@ -45,11 +44,11 @@ cloudinary.config(
 # Create temporary directory
 os.makedirs("/tmp", exist_ok=True)
 
-# Initialize the summarization pipeline with explicit cache directory
+# Initialize summarization pipeline
 summarizer = pipeline(
     "summarization", 
-    model="sshleifer/distilbart-cnn-12-6", 
-    model_kwargs={"cache_dir": "/tmp/model_cache"}
+    model="facebook/bart-large-cnn"
+    # model_kwargs={"cache_dir": "/tmp/model_cache"}
 )
 
 ALLOWED_MIME_TYPES = {
@@ -59,145 +58,101 @@ ALLOWED_MIME_TYPES = {
     'application/vnd.openxmlformats-officedocument.wordprocessingml.document': '.docx'
 }
 
-async def upload_to_cloudinary(file_path: str, resource_type: str = "raw") -> Optional[str]:
+def upload_to_cloudinary(file_path: str, resource_type: str = "raw") -> str:
     """Upload a file to Cloudinary and return the URL."""
-    try:
-        result = cloudinary.uploader.upload(
-            file_path,
-            resource_type=resource_type,
-            use_filename=True,
-            unique_filename=True
-        )
-        return result['secure_url']
-    except cloudinary.exceptions.Error as e:
-        logger.error(f"Cloudinary upload failed: {str(e)}")
-        return None
+    result = cloudinary.uploader.upload(
+        file_path,
+        resource_type=resource_type,
+        use_filename=True,
+        unique_filename=True
+    )
+    return result.get('secure_url', '')
 
 def clean_text(text: str) -> str:
-    """Clean extracted text by removing extra whitespace and newlines."""
-    text = re.sub(r'\s+', ' ', text)
+    """Clean extracted text."""
+    text = re.sub(r'\s+', ' ', text).strip()
     text = re.sub(r'\s+([.,!?])', r'\1', text)
-    text = re.sub(r'([.,!?])(\w)', r'\1 \2', text)
-    return text.strip()
+    return text
 
 def extract_text_from_pdf(file_bytes: bytes) -> str:
-    """Extract text from PDF bytes."""
+    """Extract text from PDF."""
     pdf_reader = PyPDF2.PdfReader(io.BytesIO(file_bytes))
-    text = ""
-    for page in pdf_reader.pages:
-        page_text = page.extract_text()
-        if page_text:
-            text += clean_text(page_text) + " "
-    return clean_text(text)
+    return clean_text(" ".join(page.extract_text() or "" for page in pdf_reader.pages))
 
 def extract_text_from_docx(file_bytes: bytes) -> str:
-    """Extract text from DOCX bytes."""
+    """Extract text from DOCX."""
     doc = docx.Document(io.BytesIO(file_bytes))
-    text = ""
-    for paragraph in doc.paragraphs:
-        text += paragraph.text + " "
-    return clean_text(text)
+    return clean_text(" ".join(p.text for p in doc.paragraphs))
 
 def extract_text_from_txt(file_bytes: bytes) -> str:
-    """Extract text from TXT bytes."""
-    text = file_bytes.decode('utf-8')
-    return clean_text(text)
+    """Extract text from TXT."""
+    return clean_text(file_bytes.decode('utf-8'))
 
 def generate_summary(text: str) -> str:
-    """Generate summary using the BART model."""
+    """Generate text summary."""
     max_chunk_length = 1024
     chunks = [text[i:i + max_chunk_length] for i in range(0, len(text), max_chunk_length)]
-    
-    summaries = []
-    for chunk in chunks:
-        if len(chunk.split()) >= 50:
-            summary = summarizer(chunk, max_length=130, min_length=30, do_sample=False)
-            summaries.append(summary[0]['summary_text'])
-    return " ".join(summaries)
+    return " ".join(
+        summarizer(chunk, max_length=130, min_length=30, do_sample=False)[0]['summary_text']
+        for chunk in chunks if len(chunk.split()) >= 50
+    )
 
 @app.post("/summarize/")
 async def summarize_document(file: UploadFile = File(...)):
-    """
-    Endpoint to receive document file, extract text and generate summary.
-    Supports PDF, DOCX, and TXT files.
-    """
+    """Extract and summarize text from a document."""
     if file.content_type not in ALLOWED_MIME_TYPES:
-        raise HTTPException(
-            status_code=400, 
-            detail=f"Unsupported file type. Allowed types: {', '.join(ALLOWED_MIME_TYPES.keys())}"
-        )
+        raise HTTPException(status_code=400, detail="Unsupported file type.")
     
     contents = await file.read()
-    
-    # Extract text based on file type
-    if file.content_type == 'application/pdf':
-        extracted_text = extract_text_from_pdf(contents)
-    elif file.content_type in ['application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document']:
-        extracted_text = extract_text_from_docx(contents)
-    else:  # text/plain
-        extracted_text = extract_text_from_txt(contents)
+    extractors = {
+        'application/pdf': extract_text_from_pdf,
+        'application/msword': extract_text_from_docx,
+        'application/vnd.openxmlformats-officedocument.wordprocessingml.document': extract_text_from_docx,
+        'text/plain': extract_text_from_txt
+    }
+    extracted_text = extractors[file.content_type](contents)
     
     if not extracted_text:
-        raise HTTPException(status_code=400, detail="No text could be extracted from the document")
+        raise HTTPException(status_code=400, detail="No text extracted.")
     
     summary = generate_summary(extracted_text)
-    
     if not summary:
-        raise HTTPException(status_code=400, detail="Could not generate summary from the extracted text")
+        raise HTTPException(status_code=400, detail="Could not generate summary.")
     
-    return {
-        "filename": file.filename,
-        "summary": summary
-    }
+    return {"filename": file.filename, "summary": summary}
 
 @app.post("/convert-to-word/")
 async def convert_pdf_to_word(file: UploadFile = File(...)):
-    """
-    Convert PDF document to Word format while preserving formatting.
-    Returns a downloadable Word document URL from Cloudinary.
-    """
+    """Convert PDF to Word and return Cloudinary URL."""
     if not file.filename.endswith('.pdf'):
-        raise HTTPException(status_code=400, detail="Only PDF files are allowed")
+        raise HTTPException(status_code=400, detail="Only PDF files are allowed.")
     
-    # Create temporary directory for processing
     temp_dir = tempfile.mkdtemp(dir="/tmp")
-    pdf_path = os.path.join(temp_dir, "input.pdf")
-    docx_path = os.path.join(temp_dir, "output.docx")
+    pdf_path, docx_path = os.path.join(temp_dir, "input.pdf"), os.path.join(temp_dir, "output.docx")
     
-    try:
-        # Save uploaded PDF
-        with open(pdf_path, "wb") as pdf_file:
-            content = await file.read()
-            pdf_file.write(content)
-        
-        # Convert PDF to DOCX
-        cv = Converter(pdf_path)
-        cv.convert(docx_path)
-        cv.close()
-        
-        # Upload to Cloudinary
-        docx_url = await upload_to_cloudinary(docx_path)
-        
-        if not docx_url:
-            raise HTTPException(status_code=500, detail="Failed to upload converted document")
-        
-        return {"docx_url": docx_url}
-        
-    finally:
-        # Clean up temporary files
-        for file_path in [pdf_path, docx_path]:
-            if os.path.exists(file_path):
-                os.remove(file_path)
-        os.rmdir(temp_dir)
+    with open(pdf_path, "wb") as pdf_file:
+        pdf_file.write(await file.read())
+    
+    cv = Converter(pdf_path)
+    cv.convert(docx_path)
+    cv.close()
+    
+    docx_url = upload_to_cloudinary(docx_path)
+    if not docx_url:
+        raise HTTPException(status_code=500, detail="Failed to upload converted document.")
+    
+    os.remove(pdf_path)
+    os.remove(docx_path)
+    os.rmdir(temp_dir)
+    
+    return {"docx_url": docx_url}
 
-# Health check endpoint
 @app.get("/health")
 async def health_check():
-    """Health check endpoint for Railway."""
+    """Health check endpoint."""
     return {"status": "healthy"}
 
-port = int(os.environ.get("PORT", 8080))
-
+port = int(os.getenv("PORT", 8080))
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=port)
