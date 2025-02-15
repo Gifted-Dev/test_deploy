@@ -2,8 +2,6 @@ import os
 import io
 import re
 import tempfile
-import logging
-
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from transformers import pipeline
@@ -13,10 +11,6 @@ import cloudinary
 import cloudinary.uploader
 import PyPDF2
 import docx
-
-# Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
 
 # Initialize FastAPI app
 app = FastAPI(title="Document Processing API")
