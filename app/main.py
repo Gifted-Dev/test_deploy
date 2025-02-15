@@ -26,6 +26,5 @@ init_cloudinary()
 os.makedirs("/tmp", exist_ok=True)
 
 # Include routers
-# TODO: add support for routers.
 app.include_router(document.router, tags=["documents"])
 app.include_router(health.router, tags=["health"])
