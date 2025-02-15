@@ -48,7 +48,6 @@ os.makedirs("/tmp", exist_ok=True)
 summarizer = pipeline(
     "summarization", 
     model="facebook/bart-large-cnn"
-    # model_kwargs={"cache_dir": "/tmp/model_cache"}
 )
 
 ALLOWED_MIME_TYPES = {
