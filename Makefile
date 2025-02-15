@@ -5,7 +5,7 @@ install:
 	. venv/bin/activate && pip install -r requirements.txt
 
 run:
-	uvicorn app.main:app --reload --port 8000
+	uvicorn main:app --reload --port 8000
 
 clean:
 	find . -type d -name __pycache__ -exec rm -rf {}

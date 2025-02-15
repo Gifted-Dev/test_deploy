@@ -1,8 +1,8 @@
 import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from .routes import document, health
-from .services.cloudinary import init_cloudinary
+from app.services.cloudinary import init_cloudinary
+from app.routes import document, health
 
 
 # Initialize FastAPI App
