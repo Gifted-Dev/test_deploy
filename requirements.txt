@@ -1,7 +1,10 @@
-fastapi
-uvicorn
-transformers
-torch
-pdf2docx
-pypdf2
-python-docx
+fastapi==0.100.0
+python-multipart==0.0.6
+uvicorn==0.23.0
+transformers==4.30.2
+pdf2docx==0.5.6
+PyPDF2==3.0.1
+python-docx==0.8.11
+cloudinary==1.33.0
+torch==2.0.1
+python-dotenv==1.0.0

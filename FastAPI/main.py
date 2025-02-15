@@ -1,28 +1,56 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
-from transformers import pipeline
-from pdf2docx import Converter
-import PyPDF2
-import docx
+import os
 import io
 import re
-import os
 import tempfile
+import logging
+from typing import Optional
 
+from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from transformers import pipeline
+from pdf2docx import Converter
+from dotenv import load_dotenv
+import cloudinary
+import cloudinary.uploader
+import cloudinary.api
+import PyPDF2
+import docx
 
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Initialize FastAPI app
 app = FastAPI(title="Document Processing API")
 
+# Configure CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Replace "*" with your frontend URL for better security
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Initialize the summarization pipeline
-summarizer = pipeline("summarization", model="facebook/bart-large-cnn")
+# Load environment variables from .env file
+load_dotenv()
+
+# Configure Cloudinary
+cloudinary.config(
+    cloud_name=os.getenv("CLOUDINARY_CLOUD_NAME"),
+    api_key=os.getenv("CLOUDINARY_API_KEY"),
+    api_secret=os.getenv("CLOUDINARY_API_SECRET")
+)
+
+# Create temporary directory
+os.makedirs("/tmp", exist_ok=True)
+
+# Initialize the summarization pipeline with explicit cache directory
+summarizer = pipeline(
+    "summarization", 
+    model="sshleifer/distilbart-cnn-12-6", 
+    model_kwargs={"cache_dir": "/tmp/model_cache"}
+)
 
 ALLOWED_MIME_TYPES = {
     'application/pdf': '.pdf',
@@ -30,6 +58,20 @@ ALLOWED_MIME_TYPES = {
     'application/msword': '.doc',
     'application/vnd.openxmlformats-officedocument.wordprocessingml.document': '.docx'
 }
+
+async def upload_to_cloudinary(file_path: str, resource_type: str = "raw") -> Optional[str]:
+    """Upload a file to Cloudinary and return the URL."""
+    try:
+        result = cloudinary.uploader.upload(
+            file_path,
+            resource_type=resource_type,
+            use_filename=True,
+            unique_filename=True
+        )
+        return result['secure_url']
+    except cloudinary.exceptions.Error as e:
+        logger.error(f"Cloudinary upload failed: {str(e)}")
+        return None
 
 def clean_text(text: str) -> str:
     """Clean extracted text by removing extra whitespace and newlines."""
@@ -73,17 +115,6 @@ def generate_summary(text: str) -> str:
             summaries.append(summary[0]['summary_text'])
     return " ".join(summaries)
 
-def create_word_document(text: str, filename: str) -> str:
-    """Create a Word document from text and return the file path."""
-    doc = docx.Document()
-    doc.add_paragraph(text)
-    
-    # Create temporary file
-    temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.docx')
-    doc.save(temp_file.name)
-    return temp_file.name
-
-
 @app.post("/summarize/")
 async def summarize_document(file: UploadFile = File(...)):
     """
@@ -91,8 +122,10 @@ async def summarize_document(file: UploadFile = File(...)):
     Supports PDF, DOCX, and TXT files.
     """
     if file.content_type not in ALLOWED_MIME_TYPES:
-        raise HTTPException(status_code=400, 
-                          detail=f"Unsupported file type. Allowed types: {', '.join(ALLOWED_MIME_TYPES.keys())}")
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Unsupported file type. Allowed types: {', '.join(ALLOWED_MIME_TYPES.keys())}"
+        )
     
     contents = await file.read()
     
@@ -121,52 +154,50 @@ async def summarize_document(file: UploadFile = File(...)):
 async def convert_pdf_to_word(file: UploadFile = File(...)):
     """
     Convert PDF document to Word format while preserving formatting.
-    Returns a downloadable Word document.
+    Returns a downloadable Word document URL from Cloudinary.
     """
     if not file.filename.endswith('.pdf'):
         raise HTTPException(status_code=400, detail="Only PDF files are allowed")
     
-    # Create temporary file for PDF
-    with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as pdf_temp:
-        content = await file.read()
-        pdf_temp.write(content)
-        pdf_temp.flush()
-        
-        # Create output Word document path
-        docx_path = os.path.splitext(pdf_temp.name)[0] + '.docx'
+    # Create temporary directory for processing
+    temp_dir = tempfile.mkdtemp(dir="/tmp")
+    pdf_path = os.path.join(temp_dir, "input.pdf")
+    docx_path = os.path.join(temp_dir, "output.docx")
+    
+    try:
+        # Save uploaded PDF
+        with open(pdf_path, "wb") as pdf_file:
+            content = await file.read()
+            pdf_file.write(content)
         
         # Convert PDF to DOCX
-        cv = Converter(pdf_temp.name)
+        cv = Converter(pdf_path)
         cv.convert(docx_path)
         cv.close()
-    
-    # Remove the temporary PDF file after converter is closed
-    os.unlink(pdf_temp.name)
-    
-    if not os.path.exists(docx_path):
-        raise HTTPException(status_code=500, detail="Failed to create Word document")
-    
-    # Return the file
-    response = FileResponse(
-        docx_path,
-        media_type='application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-        filename=os.path.splitext(file.filename)[0] + '.docx'
-    )
-    
-    # Define cleanup function for DOCX file
-    def cleanup_files():
-        os.remove(docx_path)
-    
-    # Schedule cleanup after response is sent
-    response.background = cleanup_files
-    return response
+        
+        # Upload to Cloudinary
+        docx_url = await upload_to_cloudinary(docx_path)
+        
+        if not docx_url:
+            raise HTTPException(status_code=500, detail="Failed to upload converted document")
+        
+        return {"docx_url": docx_url}
+        
+    finally:
+        # Clean up temporary files
+        for file_path in [pdf_path, docx_path]:
+            if os.path.exists(file_path):
+                os.remove(file_path)
+        os.rmdir(temp_dir)
 
+# Health check endpoint
+@app.get("/health")
+async def health_check():
+    """Health check endpoint for Railway."""
+    return {"status": "healthy"}
 
-
-port = int(os.getenv("PORT", 8080))  # Default to 8080 if PORT not set
+port = int(os.environ.get("PORT", 8080))
 
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=port)
-
-   
