@@ -5,7 +5,7 @@ from app.services.cloudinary import init_cloudinary
 from app.routes import document, health
 
 
-# Initialize FastAPI App
+# Initialize FastAPI App.
 app = FastAPI(title="Document Processing API")
 
 
